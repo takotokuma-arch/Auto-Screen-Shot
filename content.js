@@ -4,7 +4,13 @@ let startX = 0, startY = 0;
 
 let isAreaSelecting = false;
 let isTargetSelecting = false;
-let stopButton = null;
+
+// Control Panel UI
+let controlPanel = null;
+let progressLabel = null;
+let pauseBtn = null;
+let stopBtn = null;
+let isPausedUI = false; // Local UI tracking for pause state
 
 // Handle messages
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -18,8 +24,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     previewArea();
     sendResponse({ status: 'previewing' });
   } else if (message.action === 'PREPARE_CAPTURE') {
-    prepareCapture();
-    sendResponse({ status: 'prepared' });
+    prepareCapture(message.areaConfig, message.waitForLazyLoad).then(() => {
+       sendResponse({ status: 'prepared' });
+    });
+    return true; // Keep message channel open for async response
   } else if (message.action === 'RESTORE_CAPTURE') {
     restoreCapture();
     sendResponse({ status: 'restored' });
@@ -30,11 +38,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     clickScreen(message.x, message.y);
     sendResponse({ success: true });
   } else if (message.action === 'SHOW_STOP_BUTTON') {
-    showStopButton();
+    showControlPanel();
     sendResponse({ status: 'shown' });
   } else if (message.action === 'HIDE_STOP_BUTTON') {
-    hideStopButton();
+    hideControlPanel();
     sendResponse({ status: 'hidden' });
+  } else if (message.action === 'UPDATE_PROGRESS') {
+    updateProgress(message.current, message.total);
+    sendResponse({ status: 'updated' });
   }
   return true;
 });
@@ -199,8 +210,8 @@ function onTargetClick(e) {
 
   e.target.classList.remove('auto-screenshot-highlight');
 
-  // Save the logical coordinates
-  const clickTargetConfig = { x: e.clientX, y: e.clientY };
+  // Save Absolute Page Coordinates regardless of current scroll
+  const clickTargetConfig = { x: e.pageX, y: e.pageY };
   
   chrome.storage.local.set({ clickTargetConfig }, () => {
     chrome.runtime.sendMessage({ action: 'TARGET_SELECTED' });
@@ -227,15 +238,45 @@ function endTargetSelection() {
 // Automation Control
 // ==========================================
 
-function prepareCapture() {
+async function prepareCapture(areaConfig, waitForLazyLoad) {
   window.scrollTo(0, 0);
   document.body.classList.add('auto-screenshot-hide-scroll');
-  if (stopButton) stopButton.classList.add('auto-screenshot-hidden');
+  if (controlPanel) controlPanel.classList.add('auto-screenshot-hidden');
+
+  // If wait for lazy load is ON, detect and wait for images in viewport to load.
+  if (waitForLazyLoad && areaConfig) {
+    const dpr = window.devicePixelRatio || 1;
+    const rectX = areaConfig.x / dpr;
+    const rectY = areaConfig.y / dpr;
+    const rectW = areaConfig.width / dpr;
+    const rectH = areaConfig.height / dpr;
+
+    const imgs = Array.from(document.querySelectorAll('img'));
+    const uncompleteImgs = imgs.filter(img => {
+       if (img.complete) return false;
+       const rect = img.getBoundingClientRect();
+       // Check for intersection with our capture box
+       const intersect = !(rect.right < rectX || rect.left > rectX + rectW || rect.bottom < rectY || rect.top > rectY + rectH);
+       return intersect;
+    });
+
+    if (uncompleteImgs.length > 0) {
+      await Promise.race([
+        Promise.all(uncompleteImgs.map(img => {
+          return new Promise(resolve => {
+            img.addEventListener('load', resolve, { once: true });
+            img.addEventListener('error', resolve, { once: true });
+          });
+        })),
+        new Promise(resolve => setTimeout(resolve, 5000)) // Max wait 5 seconds
+      ]);
+    }
+  }
 }
 
 function restoreCapture() {
   document.body.classList.remove('auto-screenshot-hide-scroll');
-  if (stopButton) stopButton.classList.remove('auto-screenshot-hidden');
+  if (controlPanel) controlPanel.classList.remove('auto-screenshot-hidden');
 }
 
 function pressArrowKey(key) {
@@ -247,33 +288,81 @@ function pressArrowKey(key) {
 }
 
 function clickScreen(x, y) {
-  // Use logical coordinates to select element
-  const target = document.elementFromPoint(x, y);
+  // x and y are passed as absolute pageX, pageY. We must convert them to client coordinates if scrolling happened.
+  // Although `prepareCapture` scrolls to 0,0, calculating client coords explicitly is safer.
+  const clientX = x - window.scrollX;
+  const clientY = y - window.scrollY;
+  const target = document.elementFromPoint(clientX, clientY);
   if (target) {
-    const clickEvent = new MouseEvent('click', { view: window, bubbles: true, cancelable: true, clientX: x, clientY: y });
+    const clickEvent = new MouseEvent('click', { view: window, bubbles: true, cancelable: true, clientX: clientX, clientY: clientY });
     target.dispatchEvent(clickEvent);
   } else {
     console.warn(`No element found at coordinates: ${x}, ${y}`);
   }
 }
 
-function showStopButton() {
-  if (stopButton) return;
-  stopButton = document.createElement('button');
-  stopButton.className = 'auto-screenshot-stop-btn';
-  stopButton.textContent = '⏹ Stop Automation';
-  document.body.appendChild(stopButton);
+// Control Panel
+function showControlPanel() {
+  if (controlPanel) return;
+  
+  controlPanel = document.createElement('div');
+  controlPanel.className = 'auto-screenshot-control-panel';
 
-  stopButton.addEventListener('click', () => {
+  progressLabel = document.createElement('span');
+  progressLabel.className = 'auto-screenshot-progress';
+  progressLabel.textContent = 'Starting...';
+
+  const btnGroup = document.createElement('div');
+  btnGroup.className = 'auto-screenshot-controls-btn-group';
+
+  pauseBtn = document.createElement('button');
+  pauseBtn.className = 'auto-screenshot-btn auto-screenshot-btn-pause';
+  pauseBtn.textContent = '⏸ Pause';
+
+  stopBtn = document.createElement('button');
+  stopBtn.className = 'auto-screenshot-btn auto-screenshot-btn-stop';
+  stopBtn.textContent = '⏹ Stop';
+
+  btnGroup.appendChild(pauseBtn);
+  btnGroup.appendChild(stopBtn);
+  
+  controlPanel.appendChild(progressLabel);
+  controlPanel.appendChild(btnGroup);
+  document.body.appendChild(controlPanel);
+
+  stopBtn.addEventListener('click', () => {
     chrome.runtime.sendMessage({ action: 'STOP_REQUESTED' });
-    stopButton.textContent = 'Stopping...';
-    stopButton.disabled = true;
+    stopBtn.textContent = 'Stopping...';
+    stopBtn.disabled = true;
+    pauseBtn.disabled = true;
+  });
+
+  pauseBtn.addEventListener('click', () => {
+    isPausedUI = !isPausedUI;
+    if (isPausedUI) {
+      pauseBtn.textContent = '▶ Resume';
+      pauseBtn.className = 'auto-screenshot-btn auto-screenshot-btn-resume';
+      chrome.runtime.sendMessage({ action: 'PAUSE_REQUESTED' });
+    } else {
+      pauseBtn.textContent = '⏸ Pause';
+      pauseBtn.className = 'auto-screenshot-btn auto-screenshot-btn-pause';
+      chrome.runtime.sendMessage({ action: 'RESUME_REQUESTED' });
+    }
   });
 }
 
-function hideStopButton() {
-  if (stopButton) {
-    stopButton.remove();
-    stopButton = null;
+function hideControlPanel() {
+  if (controlPanel) {
+    controlPanel.remove();
+    controlPanel = null;
+    pauseBtn = null;
+    stopBtn = null;
+    progressLabel = null;
+  }
+}
+
+function updateProgress(current, total) {
+  if (progressLabel) {
+    progressLabel.textContent = `${current} / ${total} Pages...`;
   }
 }

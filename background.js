@@ -2,6 +2,8 @@ importScripts('idb-keyval.js');
 
 let isAutomating = false;
 let stopRequested = false;
+let isPaused = false;
+let fallbackNotified = false;
 
 // Basic Sleep Utility
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
@@ -33,15 +35,18 @@ async function closeOffscreenDocument() {
 }
 
 // Format numbers
-function padNumber(num) {
-  return num.toString().padStart(4, '0');
+function padNumber(num, totalPages) {
+  const totalLength = totalPages.toString().length;
+  // Make sure at least padding is 2
+  const targetLength = Math.max(2, totalLength);
+  return num.toString().padStart(targetLength, '0');
 }
 
 // File name construct
-function constructFilename(prefix, index, extension) {
+function constructFilename(prefix, index, extension, totalPages) {
   let safePrefix = prefix ? prefix.trim() : 'auto_screenshot';
-  if (index !== null) {
-    return `${safePrefix}_${padNumber(index)}.${extension}`;
+  if (index !== null && totalPages) {
+    return `${safePrefix}_${padNumber(index, totalPages)}.${extension}`;
   } else {
     return `${safePrefix}.${extension}`;
   }
@@ -78,12 +83,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   } else if (message.action === 'STOP_REQUESTED') {
     stopRequested = true;
     console.log("Stop requested by user");
+  } else if (message.action === 'PAUSE_REQUESTED') {
+    isPaused = true;
+    console.log("Pause requested by user");
+  } else if (message.action === 'RESUME_REQUESTED') {
+    isPaused = false;
+    console.log("Resume requested by user");
   }
 });
 
 async function startAutomationLoop() {
   isAutomating = true;
   stopRequested = false;
+  isPaused = false;
+  fallbackNotified = false;
 
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab) {
@@ -94,7 +107,7 @@ async function startAutomationLoop() {
 
   const stored = await chrome.storage.local.get([
     'areaConfig', 'clickTargetConfig', 'pageCount', 'waitTimeMs', 
-    'saveFolder', 'filePrefix', 'saveAsPdf', 'nextAction'
+    'filePrefix', 'saveAsPdf', 'waitForLazyLoad', 'nextAction'
   ]);
 
   if (!stored.areaConfig) {
@@ -107,6 +120,7 @@ async function startAutomationLoop() {
   const waitTime = stored.waitTimeMs || 2000;
   const filePrefix = stored.filePrefix || 'auto_screenshot';
   const saveAsPdf = stored.saveAsPdf || false;
+  const waitForLazyLoad = stored.waitForLazyLoad || false;
   const nextAction = stored.nextAction || 'ArrowRight';
   const clickTarget = stored.clickTargetConfig;
 
@@ -125,19 +139,30 @@ async function startAutomationLoop() {
     console.warn("Could not show stop button", e);
   }
 
-  let capturedImages = [];
+  // To prevent memory buildup in background script, we no longer store raw PDFs dataUrl unless needed temporarily
+  let capturedPdfCount = 0;
 
   for (let i = 1; i <= pages; i++) {
     console.log(`Processing page ${i} of ${pages}`);
+
+    while (isPaused) {
+      if (stopRequested) break;
+      await sleep(500);
+    }
 
     if (stopRequested) {
       notifyUser("Stopped", `Automation stopped early by user (Completed ${i - 1}/${pages}).`);
       break;
     }
+    
+    // Update Control Panel UI progress
+    try {
+      await chrome.tabs.sendMessage(tab.id, { action: 'UPDATE_PROGRESS', current: i, total: pages });
+    } catch(e) {}
 
     try {
-      // 1. Prepare capture UI
-      await chrome.tabs.sendMessage(tab.id, { action: 'PREPARE_CAPTURE' });
+      // 1. Prepare capture UI, passing wait request allowing content side to intercept lazy images
+      await chrome.tabs.sendMessage(tab.id, { action: 'PREPARE_CAPTURE', areaConfig: stored.areaConfig, waitForLazyLoad });
       await sleep(300); // DOM update timeframe
 
       // 2. Capture Chrome visible tab dataUrl
@@ -157,15 +182,29 @@ async function startAutomationLoop() {
         throw new Error(cropResponse ? cropResponse.error : "Unknown crop error");
       }
 
-      // 5. Handle image accumulation or download
+      // 5. Handle image stream forwarding or file download
       if (saveAsPdf) {
-        capturedImages.push(cropResponse.dataUrl);
+        const isFirstPage = (i === 1);
+        const addPdfResponse = await chrome.runtime.sendMessage({
+           type: 'ADD_IMAGE_TO_PDF',
+           dataUrl: cropResponse.dataUrl,
+           isFirstPage: isFirstPage
+        });
+        
+        if (!addPdfResponse || !addPdfResponse.success) {
+           throw new Error(addPdfResponse ? addPdfResponse.error : "Unknown PDF stream error");
+        }
+        capturedPdfCount++;
       } else {
-        const filename = constructFilename(filePrefix, i, 'png');
+        const filename = constructFilename(filePrefix, i, 'png', pages);
         const wroteSuccessfully = await writeToFileSystem(dirHandle, filename, cropResponse.dataUrl);
         
         if (!wroteSuccessfully) {
           // Fallback
+          if (!fallbackNotified) {
+            notifyUser("Permission Warning", "フォルダの書き込み権限がないため、標準のダウンロードフォルダに保存します");
+            fallbackNotified = true;
+          }
           await chrome.downloads.download({
             url: cropResponse.dataUrl,
             filename: filename,
@@ -183,7 +222,14 @@ async function startAutomationLoop() {
         } else {
           await chrome.tabs.sendMessage(tab.id, { action: 'PRESS_ARROW_KEY', key: nextAction });
         }
-        await sleep(waitTime);
+        
+        // Wait configured loop delay
+        let msPassed = 0;
+        while (msPassed < waitTime) {
+          if (stopRequested) break;
+          await sleep(100);
+          if (!isPaused) msPassed += 100;
+        }
       }
 
     } catch (err) {
@@ -194,20 +240,23 @@ async function startAutomationLoop() {
   }
 
   // Finalize PDF creation if configured
-  if (saveAsPdf && capturedImages.length > 0) {
+  if (saveAsPdf && capturedPdfCount > 0) {
     try {
-      notifyUser("Processing", `Combining ${capturedImages.length} images into a PDF... Please wait.`);
+      notifyUser("Processing", `Combining ${capturedPdfCount} images into a PDF... Please wait.`);
       
       const pdfResponse = await chrome.runtime.sendMessage({
-        type: 'GENERATE_PDF',
-        images: capturedImages
+        type: 'SAVE_PDF'
       });
 
       if (pdfResponse && pdfResponse.success) {
-        const pdfFilename = constructFilename(filePrefix, null, 'pdf');
+        const pdfFilename = constructFilename(filePrefix, null, 'pdf', pages);
         
         const wroteSuccessfully = await writeToFileSystem(dirHandle, pdfFilename, pdfResponse.dataUrl);
         if (!wroteSuccessfully) {
+          if (!fallbackNotified) {
+             notifyUser("Permission Warning", "フォルダの書き込み権限がないため、標準のダウンロードフォルダに保存します");
+             fallbackNotified = true;
+          }
           await chrome.downloads.download({
             url: pdfResponse.dataUrl,
             filename: pdfFilename,

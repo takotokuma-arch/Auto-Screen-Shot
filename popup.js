@@ -10,6 +10,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const saveFolderDisplay = document.getElementById('saveFolderDisplay');
   const filePrefixInput = document.getElementById('filePrefix');
   const saveAsPdfInput = document.getElementById('saveAsPdf');
+  const waitForLazyLoadInput = document.getElementById('waitForLazyLoad');
   const nextActionInput = document.getElementById('nextAction');
   
   const areaStatus = document.getElementById('areaStatus');
@@ -20,12 +21,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Load existing config
   chrome.storage.local.get([
-    'areaConfig', 'clickTargetConfig', 'pageCount', 'waitTimeMs', 'filePrefix', 'saveAsPdf', 'nextAction'
+    'areaConfig', 'clickTargetConfig', 'pageCount', 'waitTimeMs', 'filePrefix', 'saveAsPdf', 'waitForLazyLoad', 'nextAction'
   ], async (result) => {
     if (result.pageCount) pageCountInput.value = result.pageCount;
     if (result.waitTimeMs) waitTimeInput.value = result.waitTimeMs;
     if (result.filePrefix) filePrefixInput.value = result.filePrefix;
     if (result.saveAsPdf !== undefined) saveAsPdfInput.checked = result.saveAsPdf;
+    if (result.waitForLazyLoad !== undefined) waitForLazyLoadInput.checked = result.waitForLazyLoad;
     if (result.nextAction) nextActionInput.value = result.nextAction;
     
     // Check if we have a saved directory handle
@@ -50,11 +52,12 @@ document.addEventListener('DOMContentLoaded', () => {
       waitTimeMs: parseInt(waitTimeInput.value, 10),
       filePrefix: filePrefixInput.value.trim() || 'auto_screenshot',
       saveAsPdf: saveAsPdfInput.checked,
+      waitForLazyLoad: waitForLazyLoadInput.checked,
       nextAction: nextActionInput.value
     });
   };
 
-  [pageCountInput, waitTimeInput, filePrefixInput, saveAsPdfInput, nextActionInput].forEach(
+  [pageCountInput, waitTimeInput, filePrefixInput, saveAsPdfInput, waitForLazyLoadInput, nextActionInput].forEach(
     el => el.addEventListener('change', () => {
       saveConfig();
       if (el === nextActionInput) {

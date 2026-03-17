@@ -2,11 +2,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'CROP_IMAGE') {
     handleCropImage(message.dataUrl, message.areaConfig, sendResponse);
     return true; 
-  } else if (message.type === 'GENERATE_PDF') {
-    handleGeneratePdf(message.images, sendResponse);
+  } else if (message.type === 'ADD_IMAGE_TO_PDF') {
+    handleAddImageToPdf(message.dataUrl, message.isFirstPage, sendResponse);
+    return true;
+  } else if (message.type === 'SAVE_PDF') {
+    handleSavePdf(sendResponse);
     return true;
   }
 });
+
+let pdfDocument = null;
+let jsPDFRef = null;
 
 async function handleCropImage(dataUrl, areaConfig, sendResponse) {
   try {
@@ -32,40 +38,58 @@ async function handleCropImage(dataUrl, areaConfig, sendResponse) {
   }
 }
 
-async function handleGeneratePdf(images, sendResponse) {
+async function handleAddImageToPdf(dataUrl, isFirstPage, sendResponse) {
   try {
     if (!window.jspdf || !window.jspdf.jsPDF) {
       throw new Error("jsPDF library is not loaded in offscreen document.");
     }
-    const { jsPDF } = window.jspdf;
-    let doc = null;
     
-    for (let i = 0; i < images.length; i++) {
-        const img = await loadImage(images[i]);
-        const width = img.width;   
-        const height = img.height; 
-        const orientation = width > height ? 'l' : 'p';
-        
-        if (i === 0) {
-            doc = new jsPDF({
-                orientation: orientation,
-                unit: 'px',
-                format: [width, height]
-            });
-        } else {
-            doc.addPage([width, height], orientation);
-        }
-        
-        doc.addImage(img, 'PNG', 0, 0, width, height, undefined, 'FAST');
+    if (isFirstPage) {
+      jsPDFRef = window.jspdf.jsPDF;
+      pdfDocument = null; // reset previously held document
+    }
+
+    const img = await loadImage(dataUrl);
+    const width = img.width;   
+    const height = img.height; 
+    const orientation = width > height ? 'l' : 'p';
+    
+    if (isFirstPage) {
+        pdfDocument = new jsPDFRef({
+            orientation: orientation,
+            unit: 'px',
+            format: [width, height]
+        });
+    } else {
+        if (!pdfDocument) throw new Error("PDF Document not initialized.");
+        pdfDocument.addPage([width, height], orientation);
     }
     
+    pdfDocument.addImage(img, 'PNG', 0, 0, width, height, undefined, 'FAST');
+    
+    sendResponse({ success: true });
+  } catch (err) {
+    console.error('Error adding image to PDF:', err);
+    sendResponse({ success: false, error: err.message });
+  }
+}
+
+async function handleSavePdf(sendResponse) {
+  try {
+    if (!pdfDocument) {
+      throw new Error("PDF Document not initialized.");
+    }
+
     // Instead of a massive data URI string, create a Blob and then an Object URL.
-    const pdfBlob = doc.output('blob');
+    const pdfBlob = pdfDocument.output('blob');
     const pdfUrl = URL.createObjectURL(pdfBlob);
     
+    // Cleanup local memory reference
+    pdfDocument = null;
+
     sendResponse({ success: true, dataUrl: pdfUrl });
   } catch (err) {
-    console.error('Error creating PDF:', err);
+    console.error('Error saving PDF:', err);
     sendResponse({ success: false, error: err.message });
   }
 }
