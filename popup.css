@@ -1,6 +1,6 @@
 body {
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-  width: 320px;
+  width: 380px;
   margin: 0;
   padding: 0;
   background-color: #f9fafb;
@@ -46,20 +46,30 @@ h2 {
   align-items: center;
 }
 
+.input-group.checkbox-group {
+  justify-content: flex-start;
+  gap: 8px;
+}
+
 .input-group label {
   font-size: 0.875rem;
   font-weight: 500;
 }
 
-.input-group input,
+.input-group input[type="text"],
+.input-group input[type="number"],
 .input-group select {
-  width: 120px;
+  width: 140px;
   padding: 6px;
   border: 1px solid #d1d5db;
   border-radius: 4px;
   font-size: 0.875rem;
-  text-align: right;
   background-color: white;
+}
+
+.input-group input[type="text"],
+.input-group input[type="number"] {
+  text-align: right;
 }
 
 .input-group input:focus,
@@ -108,6 +118,11 @@ h2 {
 .button-group {
   display: flex;
   flex-direction: column;
+  gap: 10px;
+}
+
+.btn-row {
+  display: flex;
   gap: 10px;
 }
 

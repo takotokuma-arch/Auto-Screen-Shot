@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8">
   <link rel="stylesheet" href="popup.css">
+  <script src="idb-keyval.js"></script>
   <title>Auto Screen Shot</title>
 </head>
 <body>
@@ -10,7 +11,7 @@
     <h2>Auto Screen Shot</h2>
     
     <div class="warning-box">
-      <strong>⚠️ Important:</strong> Before starting, please ensure that Chrome's "Ask where to save each file before downloading" setting is turned <strong>OFF</strong>. Otherwise, you will be prompted for every screenshot.
+      <strong>⚠️ Important:</strong> Ensure Chrome's "Ask where to save each file before downloading" is <strong>OFF</strong>.
     </div>
 
     <div class="config-section">
@@ -23,10 +24,26 @@
         <input type="number" id="waitTimeMs" min="100" value="2000" step="100">
       </div>
       <div class="input-group">
-        <label for="arrowDirection">Next Page Key:</label>
-        <select id="arrowDirection">
+        <label>Save Folder:</label>
+        <div style="display: flex; gap: 4px; align-items: center; justify-content: flex-end; width: 154px;">
+          <span id="saveFolderDisplay" style="font-size: 0.75rem; color: #6b7280; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 80px;">Downloads</span>
+          <button id="btnSelectFolder" class="btn secondary" style="padding: 4px 8px; font-size: 0.75rem; width: auto;">Select</button>
+        </div>
+      </div>
+      <div class="input-group">
+        <label for="filePrefix">File Prefix:</label>
+        <input type="text" id="filePrefix" value="auto_screenshot">
+      </div>
+      <div class="input-group checkbox-group">
+        <input type="checkbox" id="saveAsPdf">
+        <label for="saveAsPdf">Combine into a single PDF</label>
+      </div>
+      <div class="input-group">
+        <label for="nextAction">Next Action:</label>
+        <select id="nextAction">
           <option value="ArrowRight">Right Arrow (→)</option>
           <option value="ArrowLeft">Left Arrow (←)</option>
+          <option value="ClickScreen">Click on Screen</option>
         </select>
       </div>
     </div>
@@ -36,11 +53,19 @@
         <span>Area:</span>
         <span id="areaStatus" class="status-badge unfixed">Not Set</span>
       </div>
+      <div class="status-item" id="clickTargetStatusRow" style="display: none;">
+        <span>Click Target:</span>
+        <span id="clickTargetStatus" class="status-badge unfixed">Not Set</span>
+      </div>
     </div>
 
     <div class="button-group">
-      <button id="btnAreaSelect" class="btn secondary">1. Select Area</button>
-      <button id="btnStart" class="btn primary" disabled>2. Start Automation</button>
+      <div class="btn-row">
+        <button id="btnAreaSelect" class="btn secondary">Select Area</button>
+        <button id="btnPreviewArea" class="btn secondary">Preview</button>
+      </div>
+      <button id="btnTargetSelect" class="btn secondary" style="display: none;">Select Click Target</button>
+      <button id="btnStart" class="btn primary" disabled>Start Automation</button>
     </div>
     
   </div>
